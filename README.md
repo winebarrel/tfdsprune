@@ -72,7 +72,7 @@ Usage is computed as a graph reachability problem:
 - **Edges**: a `data` block whose body references another `data.<type>.<name>` contributes an edge from itself to the referenced data source.
 - A data source is **kept** iff it is reachable from at least one root.
 
-This means a chain of data sources (`data.A` → `data.B` → `data.C`) is preserved when any link is referenced from outside, but is fully pruned when nothing outside references it. Cycles (`data.A` ↔ `data.B`) with no external reference are also pruned — they don't keep themselves alive.
+An external reference to a data source keeps that node **and everything it transitively depends on**. For a chain `data.A` → `data.B` → `data.C` (where `data.A`'s body references `data.B`, and `data.B`'s body references `data.C`), an external reference to `data.A` keeps all three. An external reference to only `data.C`, however, keeps just `data.C` — edges run from a data source to the ones it consumes, not back to its consumers, so referencing the tail of a chain does not pull in upstream data sources. Cycles (`data.A` ↔ `data.B`) with no external reference are also pruned — they can't keep themselves alive.
 
 ## Limitations
 
