@@ -31,13 +31,9 @@ func (p *Pruner) Prune(inPlace bool) error {
 	if err := p.load(); err != nil {
 		return err
 	}
+	used := p.reachableDataKeys()
 	changedFiles := map[string]bool{}
-	for {
-		used := p.collectReferences()
-		if !p.removeUnusedDataBlocks(used, changedFiles) {
-			break
-		}
-	}
+	p.removeUnusedDataBlocks(used, changedFiles)
 	return p.writeOut(inPlace, changedFiles)
 }
 
@@ -67,25 +63,58 @@ func (p *Pruner) load() error {
 	return nil
 }
 
-// collectReferences scans all attribute values across all files and returns
-// the set of `<type>.<name>` keys referenced via `data.<type>.<name>`.
-func (p *Pruner) collectReferences() map[string]bool {
-	used := map[string]bool{}
+// reachableDataKeys returns the set of `<type>.<name>` keys for data sources
+// that are reachable from non-`data` configuration. Refs found inside a
+// `data` block's body become edges in a graph keyed by the enclosing block's
+// `<type>.<name>`; refs found anywhere else are roots. The returned set is
+// the BFS closure from those roots — so unreachable cycles between data
+// sources are pruned, not kept alive by their own mutual references.
+func (p *Pruner) reachableDataKeys() map[string]bool {
+	edges := map[string][]string{}
+	roots := map[string]bool{}
 	for _, f := range p.files {
-		collectDataRefs(f.Body(), used)
-	}
-	return used
-}
-
-func collectDataRefs(body *hclwrite.Body, used map[string]bool) {
-	for _, attr := range body.Attributes() {
-		for _, key := range findDataRefs(attr.Expr().BuildTokens(nil)) {
-			used[key] = true
+		for _, blk := range f.Body().Blocks() {
+			refs := collectRefsInBody(blk.Body())
+			labels := blk.Labels()
+			if blk.Type() == "data" && len(labels) >= 2 {
+				owner := labels[0] + "." + labels[1]
+				edges[owner] = append(edges[owner], refs...)
+				continue
+			}
+			for _, k := range refs {
+				roots[k] = true
+			}
 		}
 	}
-	for _, blk := range body.Blocks() {
-		collectDataRefs(blk.Body(), used)
+	reached := map[string]bool{}
+	queue := make([]string, 0, len(roots))
+	for k := range roots {
+		reached[k] = true
+		queue = append(queue, k)
 	}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		for _, next := range edges[n] {
+			if reached[next] {
+				continue
+			}
+			reached[next] = true
+			queue = append(queue, next)
+		}
+	}
+	return reached
+}
+
+func collectRefsInBody(body *hclwrite.Body) []string {
+	var out []string
+	for _, attr := range body.Attributes() {
+		out = append(out, findDataRefs(attr.Expr().BuildTokens(nil))...)
+	}
+	for _, blk := range body.Blocks() {
+		out = append(out, collectRefsInBody(blk.Body())...)
+	}
+	return out
 }
 
 // findDataRefs returns the `<type>.<name>` keys referenced via
@@ -137,11 +166,8 @@ func isDataRefStart(tokens hclwrite.Tokens, i int) bool {
 }
 
 // removeUnusedDataBlocks removes every `data "<type>" "<name>"` block whose
-// `<type>.<name>` key is absent from `used`. Returns true if any block was
-// removed in this pass; the caller iterates to a fixed point so that data
-// blocks referenced only by other (now-removed) data blocks are pruned too.
-func (p *Pruner) removeUnusedDataBlocks(used map[string]bool, changedFiles map[string]bool) bool {
-	changed := false
+// `<type>.<name>` key is absent from `used`.
+func (p *Pruner) removeUnusedDataBlocks(used, changedFiles map[string]bool) {
 	for path, f := range p.files {
 		body := f.Body()
 		for _, blk := range body.Blocks() {
@@ -158,10 +184,8 @@ func (p *Pruner) removeUnusedDataBlocks(used map[string]bool, changedFiles map[s
 			}
 			body.RemoveBlock(blk)
 			changedFiles[path] = true
-			changed = true
 		}
 	}
-	return changed
 }
 
 func (p *Pruner) writeOut(inPlace bool, changedFiles map[string]bool) error {

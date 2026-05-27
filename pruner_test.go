@@ -22,6 +22,7 @@ func TestPrune_Golden(t *testing.T) {
 		"across-files",
 		"all-used",
 		"nested-ref",
+		"cycle",
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
